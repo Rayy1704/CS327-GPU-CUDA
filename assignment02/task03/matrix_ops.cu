@@ -21,6 +21,10 @@ __global__ void matMulKernel(float* A, float* B, float* C, int hA, int wA, int w
     }
 }
 void multiply_matrices_cuda(Matrix A, Matrix B, Matrix *C) {
+    // cudaEvent_t start, stop;
+    // cudaEventCreate(&start);
+    // cudaEventCreate(&stop);
+    // cudaEventRecord(start);
     float *d_A, *d_B, *d_C;
     size_t sizeA = A.rows * A.cols * sizeof(float);
     size_t sizeB = B.rows * B.cols * sizeof(float);
@@ -58,4 +62,11 @@ void multiply_matrices_cuda(Matrix A, Matrix B, Matrix *C) {
     checkCuda(err, "Failed to free device memory for B");
     err = cudaFree(d_C);
     checkCuda(err, "Failed to free device memory for C");
+    // cudaEventRecord(stop);
+    // cudaEventSynchronize(stop);
+    // float te = 0;
+    // cudaEventElapsedTime(&te, start, stop);
+    // cudaEventDestroy(start);
+    // cudaEventDestroy(stop);
+    // return te;
 }

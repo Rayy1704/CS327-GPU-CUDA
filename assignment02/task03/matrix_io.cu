@@ -31,3 +31,17 @@ void write_matrix_to_file(FILE *fp, Matrix m) {
 void free_matrix(Matrix m) {
     if (m.data) free(m.data);
 }
+
+
+// void append_to_csv(const char* filename, int r1, int c1, int r2, int c2, float time) {
+//     FILE *fp = fopen(filename, "a"); // "a" means append to the end of the file
+//     if (fp == NULL) {
+//         perror("Error opening CSV file");
+//         return;
+//     }
+
+//     // Format: Mat1Rows, Mat1Cols, Mat2Rows, Mat2Cols, Time(ms)
+//     fprintf(fp, "%d,%d,%d,%d,%.4f\n", r1, c1, r2, c2, time);
+
+//     fclose(fp);
+// }

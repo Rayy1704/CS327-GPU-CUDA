@@ -3,6 +3,6 @@
 
 #include "matrix.h"
 
-Matrix multiply_matrices_cuda(Matrix A, Matrix B, Matrix* C);
+void multiply_matrices_cuda(Matrix A, Matrix B, Matrix* C);
 
 #endif

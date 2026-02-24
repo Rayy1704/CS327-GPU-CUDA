@@ -1,4 +1,7 @@
 #include<stdio.h>
+#include<stdlib.h>
+#include<string.h>
+#include<ctype.h>
 #include<cuda_runtime.h>
 static void checkCuda(cudaError_t err, const char *msg) {
     if (err != cudaSuccess) {
@@ -43,22 +46,137 @@ void colorToGrayScale(unsigned char* Pin, unsigned char* Pout, int width, int he
     cudaFree(d_Pin);
     cudaFree(d_Pout);
 }
-int main(){
-    int width = 1920;
-    int height=1080;
-    size_t size =(size_t)(width*height)*sizeof(unsigned char)*3;
-    unsigned char * h_Pin = (unsigned char*)malloc(size);
-    unsigned char * h_Pout = (unsigned char*)malloc(size/3);
-    if(!h_Pin || !h_Pout){
-        fprintf(stderr,"host allocation failed\n");
-        return EXIT_FAILURE;
+
+static int read_next_int(FILE *fp, int *out){
+    int c;
+    do {
+        c = fgetc(fp);
+        if (c == '#') {
+            while (c != '\n' && c != EOF) {
+                c = fgetc(fp);
+            }
+        }
+    } while (isspace(c));
+
+    if (c == EOF) {
+        return 0;
     }
-    for(int i=0;i<width*height*3;i++){
-        h_Pin[i]=rand()%256;
+    ungetc(c, fp);
+    return fscanf(fp, "%d", out) == 1;
+}
+
+static int read_ppm(const char *path, unsigned char **data, int *width, int *height){
+    FILE *fp = fopen(path, "rb");
+    if (!fp) {
+        return 0;
     }
-    colorToGrayScale(h_Pin,h_Pout,width,height);
+
+    char magic[3] = {0};
+    if (fscanf(fp, "%2s", magic) != 1) {
+        fclose(fp);
+        return 0;
+    }
+
+    int w = 0;
+    int h = 0;
+    int maxval = 0;
+    if (!read_next_int(fp, &w) || !read_next_int(fp, &h) || !read_next_int(fp, &maxval)) {
+        fclose(fp);
+        return 0;
+    }
+    if (w <= 0 || h <= 0 || maxval <= 0) {
+        fclose(fp);
+        return 0;
+    }
+
+    size_t size = (size_t)w * (size_t)h * 3;
+    unsigned char *pixels = (unsigned char *)malloc(size);
+    if (!pixels) {
+        fclose(fp);
+        return 0;
+    }
+
+    if (strcmp(magic, "P6") == 0) {
+        fgetc(fp);
+        if (fread(pixels, 1, size, fp) != size) {
+            free(pixels);
+            fclose(fp);
+            return 0;
+        }
+    } else if (strcmp(magic, "P3") == 0) {
+        for (size_t i = 0; i < size; i++) {
+            int value = 0;
+            if (!read_next_int(fp, &value)) {
+                free(pixels);
+                fclose(fp);
+                return 0;
+            }
+            if (maxval != 255) {
+                value = (value * 255) / maxval;
+            }
+            if (value < 0) value = 0;
+            if (value > 255) value = 255;
+            pixels[i] = (unsigned char)value;
+        }
+    } else {
+        free(pixels);
+        fclose(fp);
+        return 0;
+    }
+
+    fclose(fp);
+    *data = pixels;
+    *width = w;
+    *height = h;
+    return 1;
+}
+
+static int write_pgm(const char *path, const unsigned char *data, int width, int height){
+    FILE *fp = fopen(path, "wb");
+    if (!fp) {
+        return 0;
+    }
+    fprintf(fp, "P5\n%d %d\n255\n", width, height);
+    size_t size = (size_t)width * (size_t)height;
+    int ok = fwrite(data, 1, size, fp) == size;
+    fclose(fp);
+    return ok;
+}
+
+int main(int argc, char **argv){
+    const char *inputPath = "sample.ppm";
+    const char *outputPath = "out.pgm";
+    if (argc >= 3) {
+        inputPath = argv[1];
+        outputPath = argv[2];
+    }
+
+    unsigned char *h_Pin = NULL;
+    int width = 0;
+    int height = 0;
+    if (!read_ppm(inputPath, &h_Pin, &width, &height)) {
+        fprintf(stderr, "Failed to read %s\n", inputPath);
+        return 1;
+    }
+
+    size_t graySize = (size_t)width * (size_t)height;
+    unsigned char *h_Pout = (unsigned char *)malloc(graySize);
+    if (!h_Pout) {
+        free(h_Pin);
+        return 1;
+    }
+
+    colorToGrayScale(h_Pin, h_Pout, width, height);
+
+    if (!write_pgm(outputPath, h_Pout, width, height)) {
+        fprintf(stderr, "Failed to write %s\n", outputPath);
+        free(h_Pin);
+        free(h_Pout);
+        return 1;
+    }
+
     free(h_Pin);
     free(h_Pout);
-    cuda_DeviceReset();
+    cudaDeviceReset();
     return 0;
 }

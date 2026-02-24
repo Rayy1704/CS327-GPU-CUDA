@@ -24,7 +24,7 @@ int main(int argc, char *argv[]) {
     }
     Matrix C = create_matrix(A.rows, B.cols);
     multiply_matrices_cuda(A, B, &C);
-
+    // append_to_csv("cudaTime.csv", A.rows, A.cols, B.rows, B.cols, time);
     FILE *out = (argc == 3) ? fopen(argv[2], "w") : stdout;//if ouput path is'nt given direct to stdout
     write_matrix_to_file(out, C);
     if (argc == 3) fclose(out);
