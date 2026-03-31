@@ -1,51 +1,12 @@
-![Figure 1: Denoising example (original image by Simpsons, CC BY-SA 3.0, <https://commons.wikimedia.org/w/index.php?curid=8904364>).](denoise.png)
-
-The file [cuda-denoise.c](cuda-denoise.c) contains a serial
-implementation of an _image denoising_ algorithm that (to some extent)
-can be used to "cleanup" color images. The algorithm replaces the
-color of each pixel with the _median_ of the four adjacent pixels plus
-itself (_median-of-five_).  The median-of-five algorithm is applied
-separately for each color channel (red, green, and blue).
-
-This is particularly useful for removing "hot pixels", i.e., pixels
-whose color is way off its intended value, for example due to problems
-in the sensor used to acquire the image. However, depending on the
-amount of noise, a single pass could be insufficient to remove every
-hot pixel; see Figure 1.
-
-The goal of this exercise is to parallelize the denoising algorithm on
-the GPU using CUDA. You should launch as many CUDA threads as pixels
-in the image, so that each thread is mapped onto a different pixel.
-
-The input image is read from standard input in
-[PPM](http://netpbm.sourceforge.net/doc/ppm.html) (Portable Pixmap)
-format; the result is written to standard output in the same format.
-
-To compile:
-
-        nvcc cuda-denoise.cu -o cuda-denoise
-
-To execute:
-
-        ./cuda-denoise < input > output
-
-Example:
-
-        ./cuda-denoise < valve-noise.ppm > valve-denoised.ppm
-
-## Files
-
-- [cuda-denoise.cu](cuda-denoise.cu) [hpc.h](hpc.h)
-- [valve-noise.ppm](valve-noise.ppm) (sample input)
-
- ***/
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
-
+#include <cuda_runtime.h>
 #include "hpc.h"
+
+const int block_dim=32;
+
 typedef struct {
     int width;   /* Width of the image (in pixels) */
     int height;  /* Height of the image (in pixels) */
@@ -135,12 +96,10 @@ void free_ppm( PPM_image* img )
     img->width = img->height = img->maxcol = -1;
 }
 
-#define BLKDIM 32
-
 /**
  * Swap *a and *b if necessary so that, at the end, *a <= *b
  */
-void compare_and_swap( unsigned char *a, unsigned char *b )
+__device__ void compare_and_swap( unsigned char *a, unsigned char *b )
 {
     if (*a > *b ) {
         unsigned char tmp = *a;
@@ -157,7 +116,7 @@ unsigned char *PTR(unsigned char *bmap, int width, int i, int j)
 /**
  * Return the median of v[0..4]
  */
-unsigned char median_of_five( unsigned char v[5] )
+__device__ unsigned char median_of_five( unsigned char v[5] )
 {
     /* We do a partial sort of v[5] using bubble sort until v[2] is
        correctly placed; this element is the median. (There are better
@@ -177,40 +136,104 @@ unsigned char median_of_five( unsigned char v[5] )
 /**
  * Denoise a single color channel
  */
-void denoise( unsigned char *bmap, int width, int height )
-{
-    unsigned char *out = (unsigned char*)malloc(width*height);
-    unsigned char v[5];
-    assert(out != NULL);
 
-    memcpy(out, bmap, width*height);
-    /* Note that the pixels on the border are left unchanged */
-    for (int i=1; i<height - 1; i++) {
-        for (int j=1; j<width - 1; j++) {
-            v[0] = *PTR(bmap, width, i  , j  );
-            v[1] = *PTR(bmap, width, i  , j-1);
-            v[2] = *PTR(bmap, width, i  , j+1);
-            v[3] = *PTR(bmap, width, i-1, j  );
-            v[4] = *PTR(bmap, width, i+1, j  );
+__global__ void denoise_kernel(unsigned char *in,unsigned char *out,int width, int height){
+    __shared__ unsigned char tile[block_dim+2][block_dim+2];
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+    int col = blockIdx.x * block_dim + tx;
+    int row = blockIdx.y * block_dim + ty;
+    int x = tx + 1;
+    int y = ty + 1;
 
-            *PTR(out, width, i, j) = median_of_five(v);
-        }
+    if(row < height && col < width){
+        tile[y][x] = in[row*width + col];
     }
-    memcpy(bmap, out, width*height);
-    free(out);
+    if(tx==0 && col>0){
+        tile[y][0] = in[row*width + col-1];
+    }
+    if(tx==block_dim-1 && col<width-1){
+        tile[y][block_dim+1] = in[row*width + col+1];
+    }
+    if(ty==0 && row>0){
+        tile[0][x] = in[(row-1)*width + col];
+    }
+    if(ty==block_dim-1 && row<height-1){
+        tile[block_dim+1][x] = in[(row+1)*width + col];
+    }
+    __syncthreads();
+
+    if (row < height && col < width) {
+        out[row*width + col] = in[row*width + col];
+    }
+
+    if (row >= 1 && row < height-1 && col >= 1 && col < width-1)
+    {
+        unsigned char temp[5];
+        temp[0] = tile[y][x];
+        temp[1] = tile[y][x-1];
+        temp[2] = tile[y][x+1];
+        temp[3] = tile[y-1][x];
+        temp[4] = tile[y+1][x];
+
+        out[row*width + col] = median_of_five(temp);
+    }
+}
+void denoise(unsigned char *bmap, int width, int height){
+    unsigned char *d_in, *d_out;
+    size_t size = width * height * sizeof(unsigned char);
+    cudaMalloc(&d_in, size);
+    cudaMalloc(&d_out, size);
+    cudaMemcpy(d_in, bmap, size, cudaMemcpyHostToDevice);
+
+    dim3 block(block_dim, block_dim);
+    dim3 grid((width + block_dim - 1) / block_dim, (height + block_dim - 1) / block_dim);
+    denoise_kernel<<<grid, block>>>(d_in, d_out, width, height);
+    cudaCheckError();
+
+    cudaMemcpy(bmap, d_out, size, cudaMemcpyDeviceToHost);
+    cudaFree(d_in);
+    cudaFree(d_out);
 }
 
-int main( void )
+int main( int argc, char* argv[] )
 {
+    if (argc != 3) {
+        fprintf(stderr, "Usage: %s <input.ppm> <output.ppm>\n", argv[0]);
+        exit(EXIT_FAILURE);
+    }
     PPM_image img;
-    read_ppm(stdin, &img);
-    const double tstart = hpc_gettime();
+    FILE *input_file = fopen(argv[1], "rb");
+    if (input_file == NULL) {
+        fprintf(stderr, "FATAL: could not open input file %s\n", argv[1]);
+        exit(EXIT_FAILURE);
+    }
+    read_ppm(input_file, &img);
+    fclose(input_file);
+
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start);
+
     denoise(img.r, img.width, img.height);
     denoise(img.g, img.width, img.height);
     denoise(img.b, img.width, img.height);
-    const double elapsed = hpc_gettime() - tstart;
-    fprintf(stderr, "Execution time %.3f\n", elapsed);
-    write_ppm(stdout, &img, "produced by cuda-denoise.cu");
+
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+
+    float gpu_time;
+    cudaEventElapsedTime(&gpu_time, start, stop);
+    fprintf(stderr, "Execution time on GPU: %.3f ms\n", gpu_time);
+
+    FILE *output_file = fopen(argv[2], "wb");
+    if (output_file == NULL) {
+        fprintf(stderr, "FATAL: could not open output file %s\n", argv[2]);
+        exit(EXIT_FAILURE);
+    }
+    write_ppm(output_file, &img, "produced by cuda-denoise.cu");
+    fclose(output_file);
     free_ppm(&img);
     return EXIT_SUCCESS;
 }
