@@ -1,4 +1,4 @@
-NVCC = nvcc
+NVCC =
 NVCCFLAGS = -O3 -Xcompiler -Wall,-Wextra
 SRC_DIR = src
 INC_DIR = include
